@@ -195,6 +195,8 @@
       const ctx = canvas.getContext('2d');
       let animationId;
       let pixelStates = {};
+      let lastFrame = null;
+      let pixelChangeTimers = {};
 
       // Resize canvas to full screen with 1:1 pixel ratio
       function resizeCanvas() {
@@ -202,6 +204,7 @@
         canvas.height = window.innerHeight;
         // Reset pixel states when resizing
         pixelStates = {};
+        lastFrame = null;
       }
 
       // Create the noise pattern
@@ -209,28 +212,74 @@
         const imageData = ctx.createImageData(canvas.width, canvas.height);
         const data = imageData.data;
         
-        for (let i = 0; i < data.length; i += 4) {
-          const x = (i / 4) % canvas.width;
-          const y = Math.floor((i / 4) / canvas.width);
-          const pixelKey = `${x},${y}`;
-          
-          // If we haven't seen this pixel before, initialize it randomly
-          if (pixelStates[pixelKey] === undefined) {
+        // Capture current screen to detect movement
+        if (!lastFrame) {
+          // First run - initialize all pixels randomly
+          for (let i = 0; i < data.length; i += 4) {
+            const x = (i / 4) % canvas.width;
+            const y = Math.floor((i / 4) / canvas.width);
+            const pixelKey = `${x},${y}`;
+            
             pixelStates[pixelKey] = Math.random() < 0.5;
-          } else {
-            // If this pixel was updated recently, flip its state
-            if (Math.random() < 0.01) { // Small chance to flip on each frame
-              pixelStates[pixelKey] = !pixelStates[pixelKey];
-            }
+            const value = pixelStates[pixelKey] ? 255 : 0;
+            
+            data[i] = value;     // Red
+            data[i + 1] = value; // Green
+            data[i + 2] = value; // Blue
+            data[i + 3] = 128;   // Alpha
           }
           
-          const isWhite = pixelStates[pixelKey];
-          const value = isWhite ? 255 : 0;
+          lastFrame = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        } else {
+          // Compare with last frame to detect changes
+          const currentFrame = ctx.getImageData(0, 0, canvas.width, canvas.height);
+          const lastData = lastFrame.data;
+          const currentData = currentFrame.data;
           
-          data[i] = value;     // Red
-          data[i + 1] = value; // Green
-          data[i + 2] = value; // Blue
-          data[i + 3] = 128;   // Alpha (semi-transparent to see content behind)
+          for (let i = 0; i < data.length; i += 4) {
+            const x = (i / 4) % canvas.width;
+            const y = Math.floor((i / 4) / canvas.width);
+            const pixelKey = `${x},${y}`;
+            
+            // Initialize if new
+            if (pixelStates[pixelKey] === undefined) {
+              pixelStates[pixelKey] = Math.random() < 0.5;
+            }
+            
+            // Check if this pixel has changed in the underlying content
+            const pixelChanged = 
+              Math.abs(lastData[i] - currentData[i]) > 5 || 
+              Math.abs(lastData[i+1] - currentData[i+1]) > 5 || 
+              Math.abs(lastData[i+2] - currentData[i+2]) > 5;
+            
+            // Reset timer when change is detected
+            if (pixelChanged) {
+              pixelChangeTimers[pixelKey] = 20; // Keep flipping for 20 frames after a change
+            }
+            
+            // Decrement timer for this pixel
+            if (pixelChangeTimers[pixelKey]) {
+              pixelChangeTimers[pixelKey]--;
+              
+              // Higher chance to flip when recently changed
+              if (Math.random() < 0.1) {
+                pixelStates[pixelKey] = !pixelStates[pixelKey];
+              }
+            } else {
+              // Very low chance for static pixels to change
+              if (Math.random() < 0.001) {
+                pixelStates[pixelKey] = !pixelStates[pixelKey];
+              }
+            }
+            
+            const value = pixelStates[pixelKey] ? 255 : 0;
+            data[i] = value;     // Red
+            data[i + 1] = value; // Green
+            data[i + 2] = value; // Blue
+            data[i + 3] = 128;   // Alpha
+          }
+          
+          lastFrame = currentFrame;
         }
         
         ctx.putImageData(imageData, 0, 0);
@@ -253,6 +302,7 @@
             const pixelKey = `${x + dx},${y + dy}`;
             if (pixelStates[pixelKey] !== undefined) {
               pixelStates[pixelKey] = !pixelStates[pixelKey];
+              pixelChangeTimers[pixelKey] = 10; // Continue flipping for a short while
             }
           }
         }
@@ -262,13 +312,22 @@
       const observer = new MutationObserver(function(mutations) {
         mutations.forEach(function(mutation) {
           if (mutation.type === 'childList' || mutation.type === 'attributes') {
-            // When DOM changes, mark a random set of pixels for update
-            for (let i = 0; i < 100; i++) {
-              const x = Math.floor(Math.random() * canvas.width);
-              const y = Math.floor(Math.random() * canvas.height);
-              const pixelKey = `${x},${y}`;
-              if (pixelStates[pixelKey] !== undefined) {
-                pixelStates[pixelKey] = !pixelStates[pixelKey];
+            // When DOM changes, mark pixels around that area for update
+            const rect = mutation.target.getBoundingClientRect();
+            if (rect.width && rect.height) {
+              const left = Math.max(0, Math.floor(rect.left));
+              const top = Math.max(0, Math.floor(rect.top));
+              const right = Math.min(canvas.width, Math.ceil(rect.right));
+              const bottom = Math.min(canvas.height, Math.ceil(rect.bottom));
+              
+              // Mark pixels in the changed region
+              for (let x = left; x <= right; x++) {
+                for (let y = top; y <= bottom; y++) {
+                  const pixelKey = `${x},${y}`;
+                  if (pixelStates[pixelKey] !== undefined) {
+                    pixelChangeTimers[pixelKey] = 15; // Continue flipping for a while
+                  }
+                }
               }
             }
           }
