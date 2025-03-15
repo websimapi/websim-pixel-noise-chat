@@ -1,0 +1,289 @@
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Pixel Noise Chat</title>
+  <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <style>
+    body, html {
+      margin: 0;
+      padding: 0;
+      height: 100%;
+      overflow: hidden;
+      font-family: 'Courier New', monospace;
+      background: black;
+      color: white;
+    }
+    
+    #root {
+      position: relative;
+      width: 100%;
+      height: 100%;
+    }
+    
+    #noise-canvas {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      z-index: 10;
+      pointer-events: none;
+    }
+    
+    .chat-container {
+      position: relative;
+      width: 80%;
+      max-width: 600px;
+      height: 80%;
+      margin: 40px auto;
+      background: rgba(0, 0, 0, 0.5);
+      border: 1px solid white;
+      display: flex;
+      flex-direction: column;
+      z-index: 1;
+    }
+    
+    .chat-messages {
+      flex: 1;
+      overflow-y: auto;
+      padding: 10px;
+    }
+    
+    .chat-input {
+      display: flex;
+      padding: 10px;
+      border-top: 1px solid white;
+    }
+    
+    .chat-input input {
+      flex: 1;
+      background: transparent;
+      border: 1px solid white;
+      color: white;
+      padding: 8px;
+    }
+    
+    .chat-input button {
+      background: white;
+      color: black;
+      border: none;
+      padding: 8px 16px;
+      margin-left: 8px;
+      cursor: pointer;
+    }
+    
+    .message {
+      margin-bottom: 8px;
+      padding: 8px;
+      border-radius: 4px;
+      background: rgba(255, 255, 255, 0.1);
+      position: relative;
+    }
+    
+    .message.own {
+      background: rgba(255, 255, 255, 0.2);
+      align-self: flex-end;
+    }
+    
+    .message-header {
+      font-weight: bold;
+      margin-bottom: 4px;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="noise-canvas"></canvas>
+  <div id="root"></div>
+  
+  <script type="text/babel">
+    const { useState, useEffect, useRef } = React;
+    
+    const ChatApp = () => {
+      const [message, setMessage] = useState('');
+      const [messages, setMessages] = useState([]);
+      const messagesRef = useRef(null);
+      const room = new WebsimSocket();
+      
+      useEffect(() => {
+        // Subscribe to chat messages
+        room.collection('chatMessage').subscribe((msgs) => {
+          setMessages(msgs.reverse());
+        });
+      }, []);
+      
+      useEffect(() => {
+        // Scroll to bottom when messages change
+        if (messagesRef.current) {
+          messagesRef.current.scrollTop = messagesRef.current.scrollHeight;
+        }
+      }, [messages]);
+      
+      const sendMessage = async () => {
+        if (message.trim()) {
+          await room.collection('chatMessage').create({
+            text: message,
+          });
+          setMessage('');
+        }
+      };
+      
+      const handleKeyPress = (e) => {
+        if (e.key === 'Enter') {
+          sendMessage();
+        }
+      };
+      
+      return (
+        <div className="chat-container">
+          <div className="chat-messages" ref={messagesRef}>
+            {messages.map((msg) => (
+              <Message key={msg.id} message={msg} isOwn={msg.username === room.party.client.username} />
+            ))}
+          </div>
+          <div className="chat-input">
+            <input
+              type="text"
+              value={message}
+              onChange={(e) => setMessage(e.target.value)}
+              onKeyPress={handleKeyPress}
+              placeholder="Type a message..."
+            />
+            <button onClick={sendMessage}>Send</button>
+          </div>
+        </div>
+      );
+    };
+    
+    const Message = ({ message, isOwn }) => {
+      const [jitter, setJitter] = useState({ x: 0, y: 0 });
+      
+      useEffect(() => {
+        // Create jitter effect to force pixel updates
+        const interval = setInterval(() => {
+          setJitter({
+            x: Math.random() * 2 - 1,
+            y: Math.random() * 2 - 1
+          });
+        }, 100);
+        
+        return () => clearInterval(interval);
+      }, []);
+      
+      return (
+        <div 
+          className={`message ${isOwn ? 'own' : ''}`}
+          style={{ 
+            transform: `translate(${jitter.x}px, ${jitter.y}px)`,
+          }}
+        >
+          <div className="message-header">{message.username}</div>
+          <div>{message.text}</div>
+        </div>
+      );
+    };
+    
+    ReactDOM.createRoot(document.getElementById('root')).render(<ChatApp />);
+  </script>
+  
+  <script>
+    document.addEventListener('DOMContentLoaded', function() {
+      // Initialize the noise canvas
+      const canvas = document.getElementById('noise-canvas');
+      const ctx = canvas.getContext('2d');
+      let animationId;
+      let pixelStates = {};
+
+      // Resize canvas to full screen with 1:1 pixel ratio
+      function resizeCanvas() {
+        canvas.width = window.innerWidth;
+        canvas.height = window.innerHeight;
+        // Reset pixel states when resizing
+        pixelStates = {};
+      }
+
+      // Create the noise pattern
+      function drawNoise() {
+        const imageData = ctx.createImageData(canvas.width, canvas.height);
+        const data = imageData.data;
+        
+        for (let i = 0; i < data.length; i += 4) {
+          const x = (i / 4) % canvas.width;
+          const y = Math.floor((i / 4) / canvas.width);
+          const pixelKey = `${x},${y}`;
+          
+          // If we haven't seen this pixel before, initialize it randomly
+          if (pixelStates[pixelKey] === undefined) {
+            pixelStates[pixelKey] = Math.random() < 0.5;
+          } else {
+            // If this pixel was updated recently, flip its state
+            if (Math.random() < 0.01) { // Small chance to flip on each frame
+              pixelStates[pixelKey] = !pixelStates[pixelKey];
+            }
+          }
+          
+          const isWhite = pixelStates[pixelKey];
+          const value = isWhite ? 255 : 0;
+          
+          data[i] = value;     // Red
+          data[i + 1] = value; // Green
+          data[i + 2] = value; // Blue
+          data[i + 3] = 128;   // Alpha (semi-transparent to see content behind)
+        }
+        
+        ctx.putImageData(imageData, 0, 0);
+        animationId = requestAnimationFrame(drawNoise);
+      }
+
+      // Set up the canvas
+      window.addEventListener('resize', resizeCanvas);
+      resizeCanvas();
+      drawNoise();
+      
+      // Track mouse movements to flip pixels under the mouse
+      document.addEventListener('mousemove', function(e) {
+        const x = Math.floor(e.clientX);
+        const y = Math.floor(e.clientY);
+        
+        // Flip pixels in a small area around the mouse
+        for (let dx = -5; dx <= 5; dx++) {
+          for (let dy = -5; dy <= 5; dy++) {
+            const pixelKey = `${x + dx},${y + dy}`;
+            if (pixelStates[pixelKey] !== undefined) {
+              pixelStates[pixelKey] = !pixelStates[pixelKey];
+            }
+          }
+        }
+      });
+      
+      // Set up MutationObserver to detect DOM changes and update pixels
+      const observer = new MutationObserver(function(mutations) {
+        mutations.forEach(function(mutation) {
+          if (mutation.type === 'childList' || mutation.type === 'attributes') {
+            // When DOM changes, mark a random set of pixels for update
+            for (let i = 0; i < 100; i++) {
+              const x = Math.floor(Math.random() * canvas.width);
+              const y = Math.floor(Math.random() * canvas.height);
+              const pixelKey = `${x},${y}`;
+              if (pixelStates[pixelKey] !== undefined) {
+                pixelStates[pixelKey] = !pixelStates[pixelKey];
+              }
+            }
+          }
+        });
+      });
+      
+      // Observe the entire document for changes
+      observer.observe(document.body, {
+        childList: true,
+        attributes: true,
+        characterData: true,
+        subtree: true
+      });
+    });
+  </script>
+<script defer src="https://static.cloudflareinsights.com/beacon.min.js/v8c78df7c7c0f484497ecbca7046644da1771523124516" integrity="sha512-8DS7rgIrAmghBFwoOTujcf6D9rXvH8xm8JQ1Ja01h9QX8EzXldiszufYa4IFfKdLUKTTrnSFXLDkUEOTrZQ8Qg==" data-cf-beacon='{"version":"2024.11.0","token":"4c6229722a6346bc8eb5cb0e5eae5d41","server_timing":{"name":{"cfCacheStatus":true,"cfEdge":true,"cfExtPri":true,"cfL4":true,"cfOrigin":true,"cfSpeedBrain":true},"location_startswith":null}}' crossorigin="anonymous"></script>
+</body>
+</html>
